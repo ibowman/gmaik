@@ -1,6 +1,6 @@
 # Configuration
 
-The gmaike scrips use msync, which is configured in
+The gmaik scrips use msync, which is configured in
 
 ```
 ~/.mbsyncrc
