@@ -8,13 +8,16 @@ fi
 
 query=$1
 
-# notmuch search is case-insensitive, Gmail-style.
-# --output=files gives you the actual Maildir file paths.
-results=$(notmuch search --output=files --format=text "${query}")
+# notmuch search is case-insensitive and searches headers + body.
+results="$(notmuch search "${query}")"
 
-if [ -z "${results}" ]; then
-  # No matches
+if [ -z "$results" ]; then
+  echo "No results."
   exit 1
 fi
 
-printf '%s\n' "${results}"
+# Strip everything up to and including the first "; " to get just the subject,
+# then number the subjects.
+printf '%s\n' "$results" \
+  | sed 's/.*; //' \
+  | nl -w3 -s'. '
