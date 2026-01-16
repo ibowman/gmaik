@@ -1,23 +1,76 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if ! command -v notmuch >/dev/null 2>&1; then
+  echo "Error: notmuch not found in PATH" >&2
+  exit 1
+fi
+
 if [ $# -lt 1 ]; then
   echo "Usage: $0 'search terms'" >&2
   exit 1
 fi
 
-query=$1
+# Allow multi-word queries without extra quoting
+query="$*"
 
-# notmuch search is case-insensitive and searches headers + body.
-results="$(notmuch search "${query}")"
+# Get summaries (for subjects) and message IDs (for viewing)
+summaries_raw="$(notmuch search "${query}")"
+ids_raw="$(notmuch search --output=messages --format=text "${query}")"
 
-if [ -z "$results" ]; then
+if [ -z "$summaries_raw" ] || [ -z "$ids_raw" ]; then
   echo "No results."
   exit 1
 fi
 
-# Strip everything up to and including the first "; " to get just the subject,
-# then number the subjects.
-printf '%s\n' "$results" \
-  | sed 's/.*; //' \
-  | nl -w3 -s'. '
+mapfile -t summaries <<<"$summaries_raw"
+mapfile -t msg_ids <<<"$ids_raw"
+
+if [ "${#summaries[@]}" -ne "${#msg_ids[@]}" ]; then
+  echo "Error: notmuch returned mismatched summary and message counts." >&2
+  exit 1
+fi
+
+subjects=()
+for line in "${summaries[@]}"; do
+  subj="${line#*; }"
+  subjects+=("$subj")
+done
+
+num_results=${#subjects[@]}
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+viewer="$script_dir/_view_mails.py"
+
+while true; do
+  echo
+  echo "Search results for: $query"
+  echo
+
+  for ((i = 0; i < num_results; i++)); do
+    idx=$((i + 1))
+    printf "%3d. %s\n" "$idx" "${subjects[$i]}"
+  done
+
+  echo
+  read -r -p "Read [1-${num_results}] (Q to quit): " choice
+
+  case "$choice" in
+    Q|q)
+      exit 0
+      ;;
+    *)
+      if [[ "$choice" =~ ^[0-9]+$ ]]; then
+        if (( choice >= 1 && choice <= num_results )); then
+          idx=$((choice - 1))
+          id="${msg_ids[$idx]}"
+          "$viewer" "$id"
+        else
+          echo "Invalid selection: out of range."
+        fi
+      else
+        echo "Invalid selection."
+      fi
+      ;;
+  esac
+done
