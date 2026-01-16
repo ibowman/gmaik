@@ -1,114 +1,90 @@
 #!/usr/bin/env python3
+import curses
+import json
 import os
 import shutil
 import subprocess
 import sys
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
-def run_notmuch_text(msg_query: str) -> str:
-    """Run `notmuch show` in text mode and return its output."""
+def run_notmuch_json(msg_query: str) -> Any:
     result = subprocess.run(
-        ["notmuch", "show", "--format=text", "--entire-thread=false", msg_query],
+        ["notmuch", "show", "--format=json", "--entire-thread=false", msg_query],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         check=True,
     )
-    return result.stdout
+    return json.loads(result.stdout)
 
 
-def parse_notmuch_text(output: str) -> Tuple[Dict[str, str], List[str], List[Dict[str, object]]]:
-    """
-    Parse notmuch --format=text output.
+def find_first_message(node: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(node, dict):
+        if "headers" in node and "body" in node:
+            return node
+        for v in node.values():
+            m = find_first_message(v)
+            if m is not None:
+                return m
+    elif isinstance(node, list):
+        for item in node:
+            m = find_first_message(item)
+            if m is not None:
+                return m
+    return None
 
-    Returns:
-      headers: dict with keys like 'subject', 'from', 'to', 'date'
-      body_lines: list of body lines (no ^L markers, no non-text notices)
-      attachments: list of dicts {id: int, filename: str, content_type: str}
-                   where `id` is the MIME part number (for --part=N).
-    """
-    headers: Dict[str, str] = {}
+
+def collect_body_and_attachments(parts: List[Dict[str, Any]]) -> Tuple[List[str], List[Dict[str, Any]]]:
     body_lines: List[str] = []
-    attachments: List[Dict[str, object]] = []
+    attachments: List[Dict[str, Any]] = []
 
-    in_header = False
-    in_body = False
+    def walk(part: Dict[str, Any]) -> None:
+        ctype = part.get("content-type", "")
+        filename = part.get("filename") or ""
+        part_id = part.get("id")
 
-    for line in output.splitlines():
-        if line.startswith("\x0c"):  # Control-L marker
-            marker = line[1:].strip()
+        if filename:
+            attachments.append(
+                {"id": part_id, "filename": filename, "content_type": ctype}
+            )
 
-            if marker.startswith("header{"):
-                in_header = True
-                continue
-            if marker.startswith("header}"):
-                in_header = False
-                continue
+        content = part.get("content")
+        if isinstance(content, str) and ctype.startswith("text/"):
+            body_lines.extend(content.splitlines())
+            body_lines.append("")
 
-            if marker.startswith("body{"):
-                in_body = True
-                continue
-            if marker.startswith("body}"):
-                in_body = False
-                continue
+        children = part.get("content")
+        if isinstance(children, list):
+            for child in children:
+                if isinstance(child, dict):
+                    walk(child)
 
-            if marker.startswith("attachment{"):
-                # Example:
-                # attachment{ ID: 3, Filename: invoice-20225109.pdf, Content-type: application/pdf
-                meta = marker[len("attachment{"):].strip()
-                parts = [p.strip() for p in meta.split(",")]
-                part_id = None
-                filename = None
-                ctype = None
-                for p in parts:
-                    if p.startswith("ID:"):
-                        try:
-                            part_id = int(p.split(":", 1)[1].strip())
-                        except ValueError:
-                            part_id = None
-                        continue
-                    if p.startswith("Filename:"):
-                        filename = p.split(":", 1)[1].strip()
-                        continue
-                    if p.startswith("Content-type:"):
-                        ctype = p.split(":", 1)[1].strip()
-                        continue
-                if filename:
-                    attachments.append(
-                        {"id": part_id, "filename": filename, "content_type": ctype}
-                    )
-                continue
+    for p in parts:
+        if isinstance(p, dict):
+            walk(p)
 
-            # Ignore other markers (message{, part{, etc.)
-            continue
+    while body_lines and body_lines[-1] == "":
+        body_lines.pop()
 
-        if in_header:
-            if ":" in line:
-                k, v = line.split(":", 1)
-                headers[k.strip().lower()] = v.strip()
-            continue
-
-        if in_body:
-            if line.startswith("[Non-text part:"):
-                # Skip notmuch's "non-text part" notices
-                continue
-            body_lines.append(line)
-
-    return headers, body_lines, attachments
+    return body_lines, attachments
 
 
-def render_message(headers: Dict[str, str], body_lines: List[str], attachments: List[Dict[str, object]]) -> str:
-    """Build the display text for the pager."""
+def render_message(msg: Dict[str, Any]) -> Tuple[List[str], List[Dict[str, Any]]]:
     width = shutil.get_terminal_size((80, 24)).columns
 
-    subj = headers.get("subject", "(no subject)")
-    frm = headers.get("from", "")
-    to = headers.get("to", "")
-    date = headers.get("date", "")
+    headers = msg.get("headers", {})
+    norm_headers = {k.lower(): v for k, v in headers.items()}
+
+    subj = norm_headers.get("subject", "(no subject)")
+    frm = norm_headers.get("from", "")
+    to = norm_headers.get("to", "")
+    date = norm_headers.get("date", "")
+
+    body_parts = msg.get("body", [])
+    body_lines, attachments = collect_body_and_attachments(body_parts)
 
     lines: List[str] = []
-
     lines.append(f"Subject: {subj}")
     if frm:
         lines.append(f"From:    {frm}")
@@ -121,8 +97,8 @@ def render_message(headers: Dict[str, str], body_lines: List[str], attachments: 
         lines.append("")
         lines.append("Attachments:")
         for i, att in enumerate(attachments, start=1):
-            ct = att.get("content_type") or ""
             fn = att.get("filename") or ""
+            ct = att.get("content_type") or ""
             if ct:
                 lines.append(f"  [{i}] {fn} ({ct})")
             else:
@@ -132,49 +108,164 @@ def render_message(headers: Dict[str, str], body_lines: List[str], attachments: 
     lines.append("-" * min(width, 80))
     lines.append("")
 
-    # Body as-is; notmuch already decoded text parts to UTF-8
-    lines.extend(body_lines)
+    if body_lines:
+        lines.extend(body_lines)
+        lines.append("")
+    else:
+        lines.append("[No text body]")
+        lines.append("")
 
-    return "\n".join(lines) + "\n"
-
-
-def page_text(text: str) -> None:
-    """Send text to $PAGER (default less) for scrolling."""
-    pager = os.environ.get("PAGER", "less")
-    proc = subprocess.run(
-        [pager],
-        input=text.encode("utf-8", errors="replace"),
-    )
-    # Ignore pager exit code
+    return lines, attachments
 
 
-def save_attachment(msg_query: str, att: Dict[str, object]) -> None:
-    """
-    Save a single attachment using notmuch --format=raw --part=N.
-
-    File is written into the current working directory, named as the attachment's filename.
-    """
+def save_attachment(msg_query: str, att: Dict[str, Any]) -> str:
     part_id = att.get("id")
     filename = att.get("filename") or "attachment.bin"
     if part_id is None:
-        print("Cannot save attachment: missing part ID.")
-        return
+        return "Cannot save attachment: missing part ID."
 
-    print(f"Saving attachment part {part_id} as {filename} ...")
-    with open(filename, "wb") as f:
-        subprocess.run(
-            [
-                "notmuch",
-                "show",
-                "--format=raw",
-                "--entire-thread=false",
-                f"--part={part_id}",
-                msg_query,
-            ],
-            stdout=f,
-            check=True,
-        )
-    print(f"Saved to: {os.path.abspath(filename)}")
+    out_path = os.path.abspath(filename)
+    try:
+        with open(out_path, "wb") as f:
+            subprocess.run(
+                [
+                    "notmuch",
+                    "show",
+                    "--format=raw",
+                    "--entire-thread=false",
+                    f"--part={part_id}",
+                    msg_query,
+                ],
+                stdout=f,
+                check=True,
+            )
+    except subprocess.CalledProcessError as e:
+        return f"Error saving attachment: {e}"
+
+    return f"Saved to {out_path}"
+
+
+def attachment_prompt(
+    stdscr, attachments: List[Dict[str, Any]], msg_query: str, status: str
+) -> str:
+    """
+    Run an attachment selection prompt inside curses.
+    Returns a new status string.
+    """
+    max_y, max_x = stdscr.getmaxyx()
+    stdscr.clear()
+
+    stdscr.addnstr(0, 0, "Attachments:", max_x - 1)
+    for i, att in enumerate(attachments, start=1):
+        fn = att.get("filename") or ""
+        ct = att.get("content_type") or ""
+        line = f"{i}. {fn}"
+        if ct:
+            line += f" ({ct})"
+        stdscr.addnstr(i, 0, line, max_x - 1)
+
+    prompt = f"Save which attachment [1-{len(attachments)}], a=all, ESC=cancel: "
+    stdscr.addnstr(max_y - 2, 0, prompt[: max_x - 1], max_x - 1)
+    stdscr.clrtoeol()
+    stdscr.refresh()
+
+    buf = ""
+    while True:
+        ch = stdscr.getch()
+        if ch == 27:  # ESC
+            return status
+        if ch in (curses.KEY_ENTER, 10, 13):
+            choice = buf.strip().lower()
+            if not choice:
+                return status
+            if choice == "a":
+                msgs = []
+                for att in attachments:
+                    msgs.append(save_attachment(msg_query, att))
+                return "; ".join(msgs)
+            if choice.isdigit():
+                idx = int(choice)
+                if 1 <= idx <= len(attachments):
+                    return save_attachment(msg_query, attachments[idx - 1])
+            return "Invalid attachment selection."
+        elif ch in range(ord("0"), ord("9") + 1) or ch in (ord("a"), ord("A")):
+            if len(buf) < 10:
+                buf += chr(ch)
+                stdscr.addnstr(
+                    max_y - 2, len(prompt), buf[: max_x - len(prompt) - 1], max_x - 1
+                )
+                stdscr.refresh()
+        elif ch in (curses.KEY_BACKSPACE, 127, 8):
+            if buf:
+                buf = buf[:-1]
+                stdscr.addnstr(
+                    max_y - 2, len(prompt),
+                    " " * (max_x - len(prompt) - 1),
+                    max_x - 1,
+                )
+                stdscr.addnstr(
+                    max_y - 2, len(prompt),
+                    buf[: max_x - len(prompt) - 1],
+                    max_x - 1,
+                )
+                stdscr.refresh()
+
+
+def curses_pager(
+    stdscr, lines: List[str], attachments: List[Dict[str, Any]], msg_query: str
+) -> None:
+    curses.curs_set(0)
+    stdscr.keypad(True)
+
+    top = 0
+    status = "↑/↓ PgUp/PgDn scroll  q:back  Q:quit  s:save attachment"
+
+    while True:
+        stdscr.clear()
+        max_y, max_x = stdscr.getmaxyx()
+        page_size = max_y - 1  # last line for status
+
+        if top < 0:
+            top = 0
+        max_top = max(0, len(lines) - page_size)
+        if top > max_top:
+            top = max_top
+
+        for i in range(page_size):
+            idx = top + i
+            if idx >= len(lines):
+                break
+            stdscr.addnstr(i, 0, lines[idx], max_x - 1)
+
+        stdscr.addnstr(page_size, 0, status.ljust(max_x - 1), max_x - 1)
+        stdscr.refresh()
+
+        ch = stdscr.getch()
+
+        if ch == ord("q"):
+            # back to menu
+            return
+        if ch == ord("Q"):
+            # quit everything
+            sys.exit(0)
+        if ch == ord("s"):
+            if attachments:
+                status = attachment_prompt(stdscr, attachments, msg_query, status)
+            else:
+                status = "No attachments."
+            continue
+
+        if ch == curses.KEY_UP:
+            if top > 0:
+                top -= 1
+        elif ch == curses.KEY_DOWN:
+            if top < max_top:
+                top += 1
+        elif ch == curses.KEY_PPAGE:
+            top = max(0, top - page_size)
+        elif ch == curses.KEY_NPAGE:
+            top = min(max_top, top + page_size)
+        # ignore everything else
 
 
 def main() -> None:
@@ -182,52 +273,15 @@ def main() -> None:
         print(f"Usage: {sys.argv[0]} 'notmuch-id-term'", file=sys.stderr)
         sys.exit(1)
 
-    msg_query = sys.argv[1]  # e.g. "id:abcd@example.com"
+    msg_query = sys.argv[1]
+    data = run_notmuch_json(msg_query)
+    msg = find_first_message(data)
+    if msg is None:
+        print("Error: no message found in notmuch JSON output.", file=sys.stderr)
+        sys.exit(1)
 
-    # Get and parse notmuch text output
-    raw = run_notmuch_text(msg_query)
-    headers, body_lines, attachments = parse_notmuch_text(raw)
-
-    # Show message in pager
-    text = render_message(headers, body_lines, attachments)
-    page_text(text)
-
-    # Post-view command loop (for saving attachments)
-    if not attachments:
-        return
-
-    while True:
-        print()
-        cmd = input("Command: [Enter]=back, s=save attachment, q=quit: ").strip().lower()
-        if cmd == "":
-            # Back to gm-search menu
-            return
-        if cmd == "q":
-            # Quit entire tool chain
-            sys.exit(0)
-        if cmd == "s":
-            # List attachments again with numbers
-            print("Attachments:")
-            for i, att in enumerate(attachments, start=1):
-                ct = att.get("content_type") or ""
-                fn = att.get("filename") or ""
-                if ct:
-                    print(f"  {i}. {fn} ({ct})")
-                else:
-                    print(f"  {i}. {fn}")
-            choice = input(f"Save which attachment [1-{len(attachments)}] (or a=all): ").strip().lower()
-            if choice == "a":
-                for att in attachments:
-                    save_attachment(msg_query, att)
-                return
-            if choice.isdigit():
-                idx = int(choice)
-                if 1 <= idx <= len(attachments):
-                    save_attachment(msg_query, attachments[idx - 1])
-                    return
-            print("Invalid choice.")
-        else:
-            print("Unknown command.")
+    lines, attachments = render_message(msg)
+    curses.wrapper(curses_pager, lines, attachments, msg_query)
 
 
 if __name__ == "__main__":

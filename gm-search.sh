@@ -14,7 +14,6 @@ fi
 # Allow multi-word queries without extra quoting
 query="$*"
 
-# Get summaries (for subjects) and message IDs (for viewing)
 summaries_raw="$(notmuch search "${query}")"
 ids_raw="$(notmuch search --output=messages --format=text "${query}")"
 
@@ -31,16 +30,16 @@ if [ "${#summaries[@]}" -ne "${#msg_ids[@]}" ]; then
   exit 1
 fi
 
+# Extract just the subject part after the first "; "
 subjects=()
 for line in "${summaries[@]}"; do
-  subj="${line#*; }"
-  subjects+=("$subj")
+  subjects+=( "${line#*; }" )
 done
 
 num_results=${#subjects[@]}
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-viewer="$script_dir/_view_mails.py"
+viewer="$script_dir/_view-mails.py"
 
 while true; do
   echo
@@ -48,8 +47,7 @@ while true; do
   echo
 
   for ((i = 0; i < num_results; i++)); do
-    idx=$((i + 1))
-    printf "%3d. %s\n" "$idx" "${subjects[$i]}"
+    printf "%3d. %s\n" "$((i + 1))" "${subjects[$i]}"
   done
 
   echo
@@ -60,14 +58,11 @@ while true; do
       exit 0
       ;;
     *)
-      if [[ "$choice" =~ ^[0-9]+$ ]]; then
-        if (( choice >= 1 && choice <= num_results )); then
-          idx=$((choice - 1))
-          id="${msg_ids[$idx]}"
-          "$viewer" "$id"
-        else
-          echo "Invalid selection: out of range."
-        fi
+      if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= num_results )); then
+        idx=$((choice - 1))
+        id="${msg_ids[$idx]}"
+        # Call the viewer via python3 explicitly
+        python3 "$viewer" "$id"
       else
         echo "Invalid selection."
       fi
