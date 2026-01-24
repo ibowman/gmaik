@@ -12,8 +12,8 @@ At a high level, gmaik works like this:
 
 1. You configure mbsync to talk to Gmail IMAP and to store all mail in a Maildir on your NAS or other local disk.
 2. You run gm-setup.sh once to create the Maildir tree and notmuch index based on your mbsync configuration.
-3. You run gm-sync.sh whenever you want to pull new mail from Gmail to local storage.
-4. You use gm-search.sh to search the local archive with notmuch and to read messages and save attachments.
+3. You run gm-pull.sh whenever you want to pull new mail from Gmail to local storage.
+4. You use gm-find.sh to search the local archive with notmuch and to read messages and save attachments.
 
 Everything happens on your machine. The only network access is mbsync talking to Gmail IMAP to sync emails to your computer.
 
@@ -100,19 +100,19 @@ gm-setup.sh reads your existing `~/.mbsyncrc` and uses it to discover the local 
 
 - Verifies that the Maildir configured in `MaildirStore gmail-local` exists.
 - Configures notmuch to index that Maildir.
-- Builds or updates the initial notmuch database so that gm-search.sh can query your archive.
+- Builds or updates the initial notmuch database so that gm-find.sh can query your archive.
 
 Note gm-setup.sh does not talk to Gmail directly. It only operates on the local Maildir created by mbsync. If you later change the Maildir location in `~/.mbsyncrc`, re-run gm-setup.sh so that gmaik and notmuch are aware of the new path.
 
-## Syncing mail with gm-sync.sh
+## Syncing mail with gm-pull.sh
 
 After initial setup, use the gmaik wrapper script to sync:
 
 ```sh
-./gm-sync.sh
+./gm-pull.sh
 ```
 
-gm-sync.sh calls mbsync for the `gmail` channel using the configuration in `~/.mbsyncrc`. It is safe to run it repeatedly. On each run, it will:
+gm-pull.sh calls mbsync for the `gmail` channel using the configuration in `~/.mbsyncrc`. It is safe to run it repeatedly. On each run, it will:
 
 - Connect to Gmail IMAP.
 - Pull any new messages into the local Maildir.
@@ -120,24 +120,24 @@ gm-sync.sh calls mbsync for the `gmail` channel using the configuration in `~/.m
 
 A typical workflow is:
 
-Step 1: Run `./gm-sync.sh` to fetch any new mail from Gmail.
-Step 2: Run `./gm-search.sh` to search and work with your local archive.
+Step 1: Run `./gm-pull.sh` to fetch any new mail from Gmail.
+Step 2: Run `./gm-find.sh` to search and work with your local archive.
 Step 3: Optionally delete or archive mail inside Gmail once you are satisfied that it has been mirrored locally.
 
-## Searching mail and working with attachments using gm-search.sh
+## Searching mail and working with attachments using gm-find.sh
 
-The gm-search.sh script provides an interactive interface for searching your locally mirrored Gmail using notmuch and for opening messages and saving attachments.
+The gm-find.sh script provides an interactive interface for searching your locally mirrored Gmail using notmuch and for opening messages and saving attachments.
 
 Run it from the gmaik repository:
 
 ```sh
 cd /path/to/gmaik
-./gm-search.sh <search string> 
+./gm-find.sh <search string> 
 ```
 
 The basic flow is:
 
-Step 1: Run gm-search.sh with search query. You can use terms such as
+Step 1: Run gm-find.sh with search query. You can use terms such as
 
 `from:alice@example.com`
 `subject:invoice`
@@ -146,9 +146,9 @@ Step 1: Run gm-search.sh with search query. You can use terms such as
 
 Or any combination that notmuch supports. The query runs entirely against your local Maildir and notmuch index.
 
-Step 2: gm-search.sh shows you a lists the subjects of matching messages, which you can select by entering the corresponding numbers.
+Step 2: gm-find.sh shows you a lists the subjects of matching messages, which you can select by entering the corresponding numbers.
 
-Step 3: When you select a message, gm-search.sh launches the viewer script (for example `view-mails.py`) in a pager. Inside the viewer, you can read the message body and headers.
+Step 3: When you select a message, gm-find.sh launches the viewer script (for example `view-mails.py`) in a pager. Inside the viewer, you can read the message body and headers.
 
 ### Saving attachments
 
@@ -158,8 +158,8 @@ While you are viewing a message in the viewer, you can trigger attachment saving
 
 A simple day to day usage sequence looks like this:
 
-Step 1: Run `./gm-sync.sh` to pull new mail from Gmail to your NAS.
-Step 2: Run `./gm-search.sh` and search for whatever you need. Open messages, read them in the terminal, and save any important attachments to local disk.
+Step 1: Run `./gm-pull.sh` to pull new mail from Gmail to your NAS.
+Step 2: Run `./gm-find.sh` and search for whatever you need. Open messages, read them in the terminal, and save any important attachments to local disk.
 Step 3: Periodically log in to the Gmail web UI and delete or archive messages that are safely mirrored locally in your gmaik archive to free up Google account storage.
 
 With this workflow, your Gmail becomes a lighter, online inbox, while your NAS (or other local storage) holds the long term archive with full search and attachment access.
