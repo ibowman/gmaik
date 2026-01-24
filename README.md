@@ -11,7 +11,7 @@ Mirroring your Gmail to local storage makes it easier to free up Google account 
 At a high level, gmaik works like this:
 
 1. You configure mbsync to talk to Gmail IMAP and to store all mail in a Maildir on your NAS or other local disk.
-2. You run gm-setup.sh once to create the Maildir tree and notmuch index based on your mbsync configuration.
+2. You run install.sh once to create the Maildir tree and notmuch index based on your mbsync configuration.
 3. You run gm-pull.sh whenever you want to pull new mail from Gmail to local storage.
 4. You use gm-find.sh to search the local archive with notmuch and to read messages and save attachments.
 
@@ -87,22 +87,22 @@ mbsync -VVV gmail
 
 This should populate your chosen Maildir path with standard Maildir subdirectories and message files.
 
-### Run gm-setup.sh
+### Run install.sh
 
 Once mbsync is working, run the gmaik setup script from the gmaik repository:
 
 ```sh
 cd /path/to/gmaik
-./gm-setup.sh
+./install.sh
 ```
 
-gm-setup.sh reads your existing `~/.mbsyncrc` and uses it to discover the local Maildir path and channel configuration. It then prepares the local archive for use with gmaik. In particular, it:
+install.sh reads your existing `~/.mbsyncrc` and uses it to discover the local Maildir path and channel configuration. It then prepares the local archive for use with gmaik. In particular, it:
 
 - Verifies that the Maildir configured in `MaildirStore gmail-local` exists.
 - Configures notmuch to index that Maildir.
 - Builds or updates the initial notmuch database so that gm-find.sh can query your archive.
 
-Note gm-setup.sh does not talk to Gmail directly. It only operates on the local Maildir created by mbsync. If you later change the Maildir location in `~/.mbsyncrc`, re-run gm-setup.sh so that gmaik and notmuch are aware of the new path.
+Note install.sh does not talk to Gmail directly. It only operates on the local Maildir created by mbsync. If you later change the Maildir location in `~/.mbsyncrc`, re-run install.sh so that gmaik and notmuch are aware of the new path.
 
 ## Syncing mail with gm-pull.sh
 
