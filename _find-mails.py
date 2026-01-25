@@ -10,6 +10,14 @@ from datetime import datetime
 COLOR_PAIR_NORMAL = 1
 COLOR_PAIR_BAR = 2
 
+# Default view: Inbox minus the noise (using robust wildcards)
+DEFAULT_QUERY = (
+    'tag:inbox '
+    'and not path:"**/Promotions/**" '
+    'and not path:"**/Social/**" '
+    'and not path:"**/Forums/**"'
+)
+
 def format_date_strict(timestamp):
     if not timestamp: return "            "
     try:
@@ -49,6 +57,7 @@ def run_search(query, limit):
             tags = item.get("tags", [])
             ts = item.get("timestamp", 0)
             
+            # Simple subject cleanup
             if tags:
                 tag_str = f"({', '.join(tags)})"
                 full_subject = f"{subject} {tag_str}"
@@ -75,7 +84,8 @@ def run_search(query, limit):
 def draw_loading(stdscr, query):
     stdscr.clear()
     max_y, max_x = stdscr.getmaxyx()
-    msg = f"Searching: '{query}'..."
+    disp_query = "Primary Inbox" if "Promotions" in query else query
+    msg = f"Searching: '{disp_query}'..."
     stdscr.addstr(max_y // 2, max(0, (max_x - len(msg)) // 2), msg, curses.A_BOLD)
     stdscr.refresh()
 
@@ -86,7 +96,13 @@ def draw_list(stdscr, results, selected_idx, scroll_offset, query, total_found, 
 
     # Header
     stdscr.attron(curses.color_pair(COLOR_PAIR_BAR) | curses.A_BOLD)
-    header_text = f" GMAIK: {query}"
+    
+    # Cleaner Header Title
+    if "Promotions" in query:
+        header_text = f" GMAIK: Primary Inbox"
+    else:
+        header_text = f" GMAIK: {query}"
+        
     stdscr.addstr(0, 0, " " * safe_width) 
     stdscr.addstr(0, 0, header_text[:safe_width])
     stdscr.attroff(curses.color_pair(COLOR_PAIR_BAR) | curses.A_BOLD)
@@ -159,9 +175,11 @@ def main(stdscr):
     curses.init_pair(COLOR_PAIR_BAR, curses.COLOR_WHITE, curses.COLOR_BLUE)
     curses.curs_set(0)
 
-    query = "tag:inbox"
+    # Use arguments if provided, otherwise default to Primary Inbox
     if len(sys.argv) > 1:
         query = " ".join(sys.argv[1:])
+    else:
+        query = DEFAULT_QUERY
     
     max_y, _ = stdscr.getmaxyx()
     current_limit = max_y + 10

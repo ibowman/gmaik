@@ -9,9 +9,18 @@ if [ ! -f "$finder" ]; then
     exit 1
 fi
 
-# If no arguments provided, default to standard Inbox view
+# If no arguments provided, default to "Primary" view
 if [ $# -eq 0 ]; then
-    python3 "$finder" "tag:inbox"
+    # We use **/.../** wildcards to match these folders regardless of 
+    # where mbsync put them (e.g. inside [Gmail] or at the root).
+    query="tag:inbox \
+    and not path:\"**/Promotions/**\" \
+    and not path:\"**/Social/**\" \
+    and not path:\"**/Updates/**\" \
+    and not path:\"**/Forums/**\""
+    
+    python3 "$finder" "$query"
 else
+    # Pass user arguments directly
     python3 "$finder" "$@"
 fi
