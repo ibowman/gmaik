@@ -6,18 +6,19 @@ import subprocess
 import sys
 import textwrap
 import html
-import re
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Tuple
 
-# --- HTML Processing ---
+# --- Configuration ---
+COLOR_PAIR_NORMAL = 1
+COLOR_PAIR_BAR = 2
+
+# --- HTML Processing (Restored from the "Working" Version) ---
 
 class LayoutHTMLParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.parts = []
-        # Structural tags: just a single newline to keep things tight.
-        # We rely on 'reflow_text' to add readable spacing later if needed.
         self.block_tags = {
             "p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6",
             "blockquote", "title", "table", "ul", "ol"
@@ -38,14 +39,9 @@ class LayoutHTMLParser(HTMLParser):
         if self.current_tag in self.ignore_tags:
             return
         
-        # 1. Strip "Invisible" junk (ZWNJ, ZWJ, BOM, etc) common in email hacks
-        # \u200c = Zero Width Non-Joiner (The Economist uses this heavily)
-        # \u200d = Zero Width Joiner
-        # \ufeff = BOM
-        # \u00a0 = Non-breaking space (turn into normal space)
+        # Strip invisible junk (ZWNJ, ZWJ, etc)
         clean = data.replace('\u200c', '').replace('\u200d', '').replace('\ufeff', '').replace('\u00a0', ' ')
-        
-        # 2. Collapse internal whitespace to single spaces
+        # Collapse whitespace
         clean = " ".join(clean.split())
         
         if clean:
@@ -62,11 +58,14 @@ def clean_html_to_text(html_content: str) -> str:
 # --- Content Fetching ---
 
 def run_notmuch_json(msg_query: str) -> Any:
-    result = subprocess.run(
-        ["notmuch", "show", "--format=json", "--entire-thread=false", msg_query],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
-    )
-    return json.loads(result.stdout)
+    try:
+        result = subprocess.run(
+            ["notmuch", "show", "--format=json", "--entire-thread=false", msg_query],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+        )
+        return json.loads(result.stdout)
+    except:
+        return []
 
 def find_first_message(node: Any) -> Optional[Dict[str, Any]]:
     if isinstance(node, dict):
@@ -96,8 +95,7 @@ def get_part_content(part: Dict[str, Any], msg_query: str) -> str:
             )
             if res.returncode == 0:
                 return res.stdout
-        except Exception:
-            pass
+        except: pass
     return ""
 
 def collect_body_and_attachments(parts: List[Dict[str, Any]], msg_query: str) -> Tuple[str, List[Dict[str, Any]]]:
@@ -133,7 +131,6 @@ def collect_body_and_attachments(parts: List[Dict[str, Any]], msg_query: str) ->
         if isinstance(p, dict):
             walk(p)
 
-    # Always prefer HTML for newsletters because plain text is often broken/missing
     if html_content:
         full_html = "\n".join(html_content)
         return clean_html_to_text(full_html), attachments
@@ -143,74 +140,69 @@ def collect_body_and_attachments(parts: List[Dict[str, Any]], msg_query: str) ->
     return "[No readable text content found]", attachments
 
 def reflow_text(text: str, width: int) -> List[str]:
-    """
-    Wraps text and aggressively collapses vertical whitespace.
-    """
     lines = []
-    # 1. Split into paragraphs by newline
-    # Since our HTML parser emits newlines for tags, we respect them here.
     raw_lines = text.splitlines()
-    
     for raw_line in raw_lines:
         clean_line = raw_line.strip()
         if not clean_line:
-            lines.append("") # Mark empty line
+            lines.append("")
             continue
-        
-        # Wrap the line naturally
         wrapped = textwrap.wrap(clean_line, width=width, break_long_words=True)
         lines.extend(wrapped)
 
-    # 2. Vertical Squeeze: Max 1 empty line in a row
-    # This specifically fixes the "Also:... [huge gap] ... January" issue
     final_lines = []
     empty_count = 0
-    
-    # Strip leading empty lines completely
     while lines and not lines[0]:
         lines.pop(0)
-
     for line in lines:
         if not line:
             empty_count += 1
-            if empty_count <= 1: # Allow only 1 blank line
+            if empty_count <= 1:
                 final_lines.append("")
         else:
             empty_count = 0
             final_lines.append(line)
-
     return final_lines
 
 # --- UI Logic ---
 
-def render_message(stdscr: Any, msg: Dict[str, Any], msg_query: str) -> None:
-    curses.curs_set(0)
-    stdscr.nodelay(False)
-    
+def view_mail(stdscr, thread_id: str):
+    # Setup Colors (White on Blue for bars)
     curses.start_color()
     curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_CYAN, -1)   # Headers
-    curses.init_pair(2, curses.COLOR_GREEN, -1)  # Status bar
+    curses.init_pair(COLOR_PAIR_NORMAL, -1, -1)
+    curses.init_pair(COLOR_PAIR_BAR, curses.COLOR_WHITE, curses.COLOR_BLUE)
+    curses.curs_set(0)
 
-    headers = msg.get("headers", {})
-    raw_body, attachments = collect_body_and_attachments(msg.get("body", []), msg_query)
+    data = run_notmuch_json(thread_id)
+    message = find_first_message(data)
     
-    max_y, max_x = stdscr.getmaxyx()
-    wrap_width = min(max_x - 4, 100) # -4 for margins, cap at 100 chars
-    
-    body_lines = reflow_text(raw_body, wrap_width)
-    
-    header_block = [
-        f"From:    {headers.get('From', '???')}",
-        f"Date:    {headers.get('Date', '???')}",
-        f"Subject: {headers.get('Subject', '???')}",
-        "-" * wrap_width
-    ]
-    
-    full_content = header_block + body_lines
-    total_lines = len(full_content)
+    if not message:
+        full_content = ["Error: Could not load message body."]
+        attachments = []
+    else:
+        headers = message.get("headers", {})
+        raw_body, attachments = collect_body_and_attachments(message.get("body", []), thread_id)
+        
+        max_y, max_x = stdscr.getmaxyx()
+        wrap_width = min(max_x - 4, 100)
+        
+        body_lines = reflow_text(raw_body, wrap_width)
+        
+        header_block = [
+            f"From:    {headers.get('From', '???')}",
+            f"Date:    {headers.get('Date', '???')}",
+            f"Subject: {headers.get('Subject', '???')}",
+            "-" * wrap_width
+        ]
+        full_content = header_block + body_lines
+        if attachments:
+            full_content.append("")
+            full_content.append(f"[{len(attachments)} Attachments included. Press 's' to save]")
+
     top = 0
-    
+    total_lines = len(full_content)
+
     while True:
         stdscr.clear()
         max_y, max_x = stdscr.getmaxyx()
@@ -223,7 +215,9 @@ def render_message(stdscr: Any, msg: Dict[str, Any], msg_query: str) -> None:
                 break
             
             line = full_content[idx]
-            attr = curses.color_pair(1) if idx < 3 else curses.A_NORMAL
+            # Headers in Blue (first 3 lines) to match theme? 
+            # Or just keep plain. Let's keep plain for readability, maybe Bold.
+            attr = curses.A_BOLD if idx < 3 else curses.A_NORMAL
             
             if len(line) > max_x:
                 line = line[:max_x-1]
@@ -233,72 +227,77 @@ def render_message(stdscr: Any, msg: Dict[str, Any], msg_query: str) -> None:
                 pass
 
         # Draw Status Bar
-        status = f" [q] Quit  [s] Save ({len(attachments)})  [Arrows] Scroll"
+        status = f" [Arrows] Scroll  [PgUp/PgDn] Page  [q] Back"
+        if attachments:
+            status += "  [s] Save Att."
+            
         try:
-            stdscr.attron(curses.color_pair(2) | curses.A_REVERSE)
-            stdscr.addstr(max_y - 1, 0, status.ljust(max_x - 1)[:max_x-1])
-            stdscr.attroff(curses.color_pair(2) | curses.A_REVERSE)
+            stdscr.attron(curses.color_pair(COLOR_PAIR_BAR))
+            stdscr.addstr(max_y - 1, 0, status.ljust(max_x - 1))
+            stdscr.attroff(curses.color_pair(COLOR_PAIR_BAR))
         except curses.error:
             pass
-            
+
         stdscr.refresh()
 
         ch = stdscr.getch()
 
-        if ch == ord('q'):
+        if ch == ord("q"):
             return 
 
-        elif ch == ord('s'):
-            if attachments:
-                save_dir = os.getcwd()
-                count = 0
-                for att in attachments:
-                    fname = os.path.basename(att["filename"]) or f"att_{att['id']}"
-                    try:
-                        with open(fname, "wb") as f:
-                            subprocess.run(
-                                ["notmuch", "show", "--format=raw", f"--part={att['id']}", msg_query],
-                                stdout=f, check=True
-                            )
-                        count += 1
-                    except: pass
-                
-                msg_str = f"Saved {count} files."
-                stdscr.addstr(max_y-2, 0, msg_str[:max_x-1], curses.A_BOLD)
-                stdscr.refresh()
-                curses.napms(1000)
-            else:
-                stdscr.addstr(max_y-2, 0, "No attachments.", curses.A_BOLD)
-                stdscr.refresh()
-                curses.napms(500)
+        elif ch == ord("s") and attachments:
+            # Simple save
+            count = 0
+            for att in attachments:
+                fname = os.path.basename(att["filename"]) or f"att_{att['id']}"
+                try:
+                    with open(fname, "wb") as f:
+                        subprocess.run(
+                            ["notmuch", "show", "--format=raw", f"--part={att['id']}", thread_id],
+                            stdout=f, check=True
+                        )
+                    count += 1
+                except: pass
+            
+            # Feedback
+            msg = f"Saved {count} files to {os.getcwd()}"
+            stdscr.attron(curses.color_pair(COLOR_PAIR_BAR))
+            stdscr.addstr(max_y-2, 0, msg.ljust(max_x-1))
+            stdscr.attroff(curses.color_pair(COLOR_PAIR_BAR))
+            stdscr.refresh()
+            curses.napms(1000)
 
-        elif ch == curses.KEY_UP:
-            top = max(0, top - 1)
-        elif ch == curses.KEY_DOWN:
-            top = min(max(0, total_lines - page_size), top + 1)
-        elif ch == curses.KEY_PPAGE:
+        # Scroll Down (j / Down)
+        elif ch == ord("j") or ch == curses.KEY_DOWN:
+            if top < total_lines - page_size:
+                top += 1
+
+        # Scroll Up (k / Up)
+        elif ch == ord("k") or ch == curses.KEY_UP:
+            if top > 0:
+                top -= 1
+
+        # Page Down (Ctrl+F / PgDn / Space)
+        elif ch == 6 or ch == curses.KEY_NPAGE or ch == ord(" "):
+            top = min(total_lines - page_size, top + page_size)
+            if top < 0: top = 0
+
+        # Page Up (Ctrl+B / PgUp)
+        elif ch == 2 or ch == curses.KEY_PPAGE:
             top = max(0, top - page_size)
-        elif ch == curses.KEY_NPAGE:
-            top = min(max(0, total_lines - page_size), top + page_size)
-        elif ch == curses.KEY_HOME:
+
+        # Top / Bottom
+        elif ch == ord("g") or ch == curses.KEY_HOME:
             top = 0
-        elif ch == curses.KEY_END:
+        elif ch == ord("G") or ch == curses.KEY_END:
             top = max(0, total_lines - page_size)
 
-def main() -> None:
+def main():
     if len(sys.argv) < 2:
         sys.exit(1)
-
-    msg_query = sys.argv[1]
-    try:
-        data = run_notmuch_json(msg_query)
-        msg = find_first_message(data)
-        if msg:
-            curses.wrapper(lambda stdscr: render_message(stdscr, msg, msg_query))
-        else:
-            print("Error: content not found.")
-    except Exception as e:
-        print(f"Error: {e}")
+    
+    thread_id = sys.argv[1]
+    curses.wrapper(view_mail, thread_id)
 
 if __name__ == "__main__":
     main()
