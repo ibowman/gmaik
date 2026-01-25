@@ -13,8 +13,6 @@ from typing import Any, Dict, List, Optional, Tuple
 COLOR_PAIR_NORMAL = 1
 COLOR_PAIR_BAR = 2
 
-# --- HTML Processing (Restored from the "Working" Version) ---
-
 class LayoutHTMLParser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -38,12 +36,8 @@ class LayoutHTMLParser(HTMLParser):
     def handle_data(self, data):
         if self.current_tag in self.ignore_tags:
             return
-        
-        # Strip invisible junk (ZWNJ, ZWJ, etc)
         clean = data.replace('\u200c', '').replace('\u200d', '').replace('\ufeff', '').replace('\u00a0', ' ')
-        # Collapse whitespace
         clean = " ".join(clean.split())
-        
         if clean:
             self.parts.append(clean)
 
@@ -54,8 +48,6 @@ def clean_html_to_text(html_content: str) -> str:
     parser = LayoutHTMLParser()
     parser.feed(html_content)
     return parser.get_text()
-
-# --- Content Fetching ---
 
 def run_notmuch_json(msg_query: str) -> Any:
     try:
@@ -164,10 +156,7 @@ def reflow_text(text: str, width: int) -> List[str]:
             final_lines.append(line)
     return final_lines
 
-# --- UI Logic ---
-
 def view_mail(stdscr, thread_id: str):
-    # Setup Colors (White on Blue for bars)
     curses.start_color()
     curses.use_default_colors()
     curses.init_pair(COLOR_PAIR_NORMAL, -1, -1)
@@ -198,7 +187,7 @@ def view_mail(stdscr, thread_id: str):
         full_content = header_block + body_lines
         if attachments:
             full_content.append("")
-            full_content.append(f"[{len(attachments)} Attachments included. Press 's' to save]")
+            full_content.append(f"[{len(attachments)} Attachments. Press 'd' to download]")
 
     top = 0
     total_lines = len(full_content)
@@ -208,35 +197,26 @@ def view_mail(stdscr, thread_id: str):
         max_y, max_x = stdscr.getmaxyx()
         page_size = max_y - 2 
 
-        # Draw Text
         for i in range(page_size):
             idx = top + i
-            if idx >= total_lines:
-                break
+            if idx >= total_lines: break
             
             line = full_content[idx]
-            # Headers in Blue (first 3 lines) to match theme? 
-            # Or just keep plain. Let's keep plain for readability, maybe Bold.
             attr = curses.A_BOLD if idx < 3 else curses.A_NORMAL
-            
-            if len(line) > max_x:
-                line = line[:max_x-1]
-            try:
-                stdscr.addstr(i, 0, line, attr)
-            except curses.error:
-                pass
+            if len(line) > max_x: line = line[:max_x-1]
+            try: stdscr.addstr(i, 0, line, attr)
+            except: pass
 
-        # Draw Status Bar
+        # Status Bar Update (d for download)
         status = f" [Arrows] Scroll  [PgUp/PgDn] Page  [q] Back"
         if attachments:
-            status += "  [s] Save Att."
+            status += "  [d] Download Att."
             
         try:
             stdscr.attron(curses.color_pair(COLOR_PAIR_BAR))
             stdscr.addstr(max_y - 1, 0, status.ljust(max_x - 1))
             stdscr.attroff(curses.color_pair(COLOR_PAIR_BAR))
-        except curses.error:
-            pass
+        except: pass
 
         stdscr.refresh()
 
@@ -245,8 +225,8 @@ def view_mail(stdscr, thread_id: str):
         if ch == ord("q"):
             return 
 
-        elif ch == ord("s") and attachments:
-            # Simple save
+        # Changed from 's' to 'd'
+        elif ch == ord("d") and attachments:
             count = 0
             for att in attachments:
                 fname = os.path.basename(att["filename"]) or f"att_{att['id']}"
@@ -259,34 +239,22 @@ def view_mail(stdscr, thread_id: str):
                     count += 1
                 except: pass
             
-            # Feedback
-            msg = f"Saved {count} files to {os.getcwd()}"
+            msg = f"Downloaded {count} files."
             stdscr.attron(curses.color_pair(COLOR_PAIR_BAR))
             stdscr.addstr(max_y-2, 0, msg.ljust(max_x-1))
             stdscr.attroff(curses.color_pair(COLOR_PAIR_BAR))
             stdscr.refresh()
             curses.napms(1000)
 
-        # Scroll Down (j / Down)
         elif ch == ord("j") or ch == curses.KEY_DOWN:
-            if top < total_lines - page_size:
-                top += 1
-
-        # Scroll Up (k / Up)
+            if top < total_lines - page_size: top += 1
         elif ch == ord("k") or ch == curses.KEY_UP:
-            if top > 0:
-                top -= 1
-
-        # Page Down (Ctrl+F / PgDn / Space)
+            if top > 0: top -= 1
         elif ch == 6 or ch == curses.KEY_NPAGE or ch == ord(" "):
             top = min(total_lines - page_size, top + page_size)
             if top < 0: top = 0
-
-        # Page Up (Ctrl+B / PgUp)
         elif ch == 2 or ch == curses.KEY_PPAGE:
             top = max(0, top - page_size)
-
-        # Top / Bottom
         elif ch == ord("g") or ch == curses.KEY_HOME:
             top = 0
         elif ch == ord("G") or ch == curses.KEY_END:
